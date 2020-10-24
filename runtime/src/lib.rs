@@ -38,6 +38,9 @@ pub use frame_support::{
 	},
 };
 
+/// contract rpc endpoint
+use pallet_contracts_rpc_runtime_api::ContractExecResult;
+
 /// Import the template pallet.
 pub use pallet_template;
 
@@ -92,11 +95,11 @@ pub mod opaque {
 }
 
 pub const VERSION: RuntimeVersion = RuntimeVersion {
-	spec_name: create_runtime_str!("node-template"),
 	impl_name: create_runtime_str!("node-template"),
+	spec_name: create_runtime_str!("avcdsld-5"),
 	authoring_version: 1,
-	spec_version: 1,
 	impl_version: 1,
+	spec_version: 5, // Update!!
 	apis: RUNTIME_API_VERSIONS,
 	transaction_version: 1,
 };
@@ -109,6 +112,11 @@ pub const SLOT_DURATION: u64 = MILLISECS_PER_BLOCK;
 pub const MINUTES: BlockNumber = 60_000 / (MILLISECS_PER_BLOCK as BlockNumber);
 pub const HOURS: BlockNumber = MINUTES * 60;
 pub const DAYS: BlockNumber = HOURS * 24;
+
+// Money matters.
+pub const MILLICENTS: Balance = 1_000_000_000;
+pub const CENTS: Balance = 1_000 * MILLICENTS;
+pub const DOLLARS: Balance = 100 * CENTS;
 
 /// The version information used to identify this runtime when compiled natively.
 #[cfg(feature = "std")]
@@ -227,6 +235,33 @@ impl pallet_timestamp::Trait for Runtime {
 	type WeightInfo = ();
 }
 
+// add contract impliment
+parameter_types! {
+    pub const TombstoneDeposit: Balance = 16 * MILLICENTS;
+    pub const RentByteFee: Balance = 4 * MILLICENTS;
+    pub const RentDepositOffset: Balance = 1000 * MILLICENTS;
+    pub const SurchargeReward: Balance = 150 * MILLICENTS;
+}
+
+impl pallet_contracts::Trait for Runtime {
+    type Time = Timestamp;
+    type Randomness = RandomnessCollectiveFlip;
+    type Currency = Balances;
+    type Event = Event;
+    type DetermineContractAddress = pallet_contracts::SimpleAddressDeterminer<Runtime>;
+    type TrieIdGenerator = pallet_contracts::TrieIdFromParentCounter<Runtime>;
+    type RentPayment = ();
+    type SignedClaimHandicap = pallet_contracts::DefaultSignedClaimHandicap;
+    type TombstoneDeposit = TombstoneDeposit;
+    type StorageSizeOffset = pallet_contracts::DefaultStorageSizeOffset;
+    type RentByteFee = RentByteFee;
+    type RentDepositOffset = RentDepositOffset;
+    type SurchargeReward = SurchargeReward;
+    type MaxDepth = pallet_contracts::DefaultMaxDepth;
+    type MaxValueSize = pallet_contracts::DefaultMaxValueSize;
+    type WeightPrice = pallet_transaction_payment::Module<Self>;
+}
+
 parameter_types! {
 	pub const ExistentialDeposit: u128 = 500;
 	pub const MaxLocks: u32 = 50;
@@ -261,6 +296,51 @@ impl pallet_sudo::Trait for Runtime {
 	type Call = Call;
 }
 
+// Configure of Identity Pallet
+parameter_types! {
+	// Minimum 100 bytes/KSM deposited (1 CENT/byte)
+	pub const BasicDeposit: Balance = 10 * DOLLARS;       // 258 bytes on-chain
+	pub const FieldDeposit: Balance = 250 * CENTS;        // 66 bytes on-chain
+	pub const SubAccountDeposit: Balance = 2 * DOLLARS;   // 53 bytes on-chain
+	pub const MaxSubAccounts: u32 = 100;
+	pub const MaxAdditionalFields: u32 = 100;
+	pub const MaxRegistrars: u32 = 20;
+}
+
+impl pallet_identity::Trait for Runtime {
+	type Event = Event;
+	type Currency = Balances;
+	type Slashed = ();
+	type BasicDeposit = BasicDeposit;
+	type FieldDeposit = FieldDeposit;
+	type SubAccountDeposit = SubAccountDeposit;
+	type MaxSubAccounts = MaxSubAccounts;
+	type MaxAdditionalFields = MaxAdditionalFields;
+	type MaxRegistrars = MaxRegistrars;
+	type RegistrarOrigin = frame_system::EnsureRoot<AccountId>;
+	type ForceOrigin = frame_system::EnsureRoot<AccountId>;
+	type WeightInfo = ();
+}
+
+// Configure of Scheduler Pallet
+//
+// Define the types required by the Scheduler pallet.
+parameter_types! {
+    pub const MaxScheduledPerBlock: u32 = 50;
+}
+//
+// Configure the runtime's implementation of the Scheduler pallet.
+impl pallet_scheduler::Trait for Runtime {
+    type Event = Event;
+    type Origin = Origin;
+    type PalletsOrigin = OriginCaller;
+    type Call = Call;
+    type MaximumWeight = MaxScheduledPerBlock;
+    type ScheduleOrigin = frame_system::EnsureRoot<AccountId>;
+    type MaxScheduledPerBlock = MaxScheduledPerBlock;
+		type WeightInfo = ();
+}
+
 /// Configure the template pallet in pallets/template.
 impl pallet_template::Trait for Runtime {
 	type Event = Event;
@@ -280,8 +360,13 @@ construct_runtime!(
 		Grandpa: pallet_grandpa::{Module, Call, Storage, Config, Event},
 		Balances: pallet_balances::{Module, Call, Storage, Config<T>, Event<T>},
 		TransactionPayment: pallet_transaction_payment::{Module, Storage},
-		Sudo: pallet_sudo::{Module, Call, Config<T>, Storage, Event<T>},
+		Sudo: pallet_sudo::{Module, Call, Storage, Config<T>, Event<T>},
 		// Include the custom logic from the template pallet in the runtime.
+		Identity: pallet_identity::{Module, Call, Storage, Event<T>},
+		// Add the Scheduler pallet inside the construct_runtime! macro.
+		Scheduler: pallet_scheduler::{Module, Call, Storage, Event<T>},
+		// Add contract
+		Contracts: pallet_contracts::{Module, Call, Config, Storage, Event<T>},
 		TemplateModule: pallet_template::{Module, Call, Storage, Event<T>},
 	}
 );
@@ -477,4 +562,39 @@ impl_runtime_apis! {
 			Ok(batches)
 		}
 	}
+
+	// contracgt rpc endpoint
+	impl pallet_contracts_rpc_runtime_api::ContractsApi<Block, AccountId, Balance, BlockNumber> for Runtime {
+		fn call(
+				origin: AccountId,
+				dest: AccountId,
+				value: Balance,
+				gas_limit: u64,
+				input_data: Vec<u8>,
+		) -> ContractExecResult {
+				let (exec_result, gas_consumed) =
+						Contracts::bare_call(origin, dest.into(), value, gas_limit, input_data);
+				match exec_result {
+						Ok(v) => ContractExecResult::Success {
+								flags: v.flags.bits(),
+								data: v.data,
+								gas_consumed: gas_consumed,
+						},
+						Err(_) => ContractExecResult::Error,
+				}
+		}
+
+		fn get_storage(
+				address: AccountId,
+				key: [u8; 32],
+		) -> pallet_contracts_primitives::GetStorageResult {
+				Contracts::get_storage(address, key)
+		}
+
+		fn rent_projection(
+				address: AccountId,
+		) -> pallet_contracts_primitives::RentProjectionResult<BlockNumber> {
+				Contracts::rent_projection(address)
+		}
+  }
 }
